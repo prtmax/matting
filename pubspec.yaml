@@ -20,6 +20,7 @@ dependencies:
   onnxruntime_v2:
     git:
       url: https://github.com/prtmax/onnxruntime_v2.git
+      ref: main
 
   flutter_drawing_board:
     git:
