@@ -106,7 +106,7 @@ class MattingStroke extends CustomPainter {
         combined.addPath(path, Offset.zero);
       }
 
-      final Path shifted = combined.shift(Offset(-lineWidth, 0));
+      final Path shifted = combined.shift(Offset(-lineWidth/scale, 0));
 
       final Paint fillPaint = Paint()
         ..color = color

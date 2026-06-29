@@ -403,7 +403,7 @@ packages:
     dependency: transitive
     description:
       path: "."
-      ref: HEAD
+      ref: main
       resolved-ref: "36ce9cd65a5a35ca70ed33da1523e267813c2ee5"
       url: "https://github.com/prtmax/onnxruntime_v2.git"
     source: git
