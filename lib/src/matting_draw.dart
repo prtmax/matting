@@ -10,7 +10,6 @@ import 'matting_bean.dart';
 import 'matting_contour.dart';
 
 extension MattingDraw on DrawingController {
-
   /// 将图片转为画笔，添加
   void addImageOcrResult(MattingResult result, double boardScale){
     // 提取 editImage 中有色区域的轮廓路径（与 refreshContourData 一致）
@@ -70,8 +69,6 @@ extension MattingDraw on DrawingController {
     }
     addContents(contents);
   }
-
-
 
   /// 获取画笔图层区域对应的原图像素数据，并去除四周透明区域后，返回相对位置和大小，去除四周后的图片
   Future<MattingResult?> getPaintAreaImageContour(Uint8List image) async {
@@ -142,7 +139,7 @@ extension MattingDraw on DrawingController {
     );
   }
 
-  /// 构建画笔图层的遮罩数据
+  /// 构建画笔图层的遮罩数据，按 history 时序逐操作处理
   Future<Uint8List> _buildMask(List<PaintContent> history, int w, int h) async {
     final Uint8List mask = Uint8List(w * h);
 
@@ -151,41 +148,36 @@ extension MattingDraw on DrawingController {
     final double scaleX = w / boardSize.width;
     final double scaleY = h / boardSize.height;
 
-    // 渲染 SimpleLine 笔触为前景
-    final ui.PictureRecorder lineRecorder = ui.PictureRecorder();
-    final Canvas lineCanvas = Canvas(lineRecorder);
-    lineCanvas.scale(scaleX, scaleY);
-
+    // 按历史顺序逐个处理，确保后操作覆盖前操作
     for (final PaintContent content in history) {
       if (content is SimpleLine) {
-        content.draw(lineCanvas, boardSize, true);
-      }
-    }
+        // SimpleLine → 设为前景
+        final ui.PictureRecorder recorder = ui.PictureRecorder();
+        final Canvas canvas = Canvas(recorder);
+        canvas.scale(scaleX, scaleY);
+        content.draw(canvas, boardSize, true);
 
-    final ui.Picture linePicture = lineRecorder.endRecording();
-    final ui.Image lineImage = await linePicture.toImage(w, h);
-    final ByteData? lineBytes = await lineImage.toByteData(
-      format: ui.ImageByteFormat.rawRgba,
-    );
+        final ui.Picture picture = recorder.endRecording();
+        final ui.Image image = await picture.toImage(w, h);
+        final ByteData? bytes = await image.toByteData(
+          format: ui.ImageByteFormat.rawRgba,
+        );
 
-    if (lineBytes != null) {
-      for (int y = 0; y < h; y++) {
-        for (int x = 0; x < w; x++) {
-          final int offset = (y * w + x) * 4;
-          final int alpha = lineBytes.getUint8(offset + 3);
-          if (alpha > 0) {
-            mask[y * w + x] = 255;
+        if (bytes != null) {
+          for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+              final int offset = (y * w + x) * 4;
+              if (bytes.getUint8(offset + 3) > 0) {
+                mask[y * w + x] = 255;
+              }
+            }
           }
         }
-      }
-    }
-
-    // 渲染 Eraser 笔触为背景（清除）
-    for (final PaintContent content in history) {
-      if (content is Eraser) {
-        final ui.PictureRecorder eraserRecorder = ui.PictureRecorder();
-        final Canvas eraserCanvas = Canvas(eraserRecorder);
-        eraserCanvas.scale(scaleX, scaleY);
+      } else if (content is Eraser) {
+        // Eraser → 设为背景（清除）
+        final ui.PictureRecorder recorder = ui.PictureRecorder();
+        final Canvas canvas = Canvas(recorder);
+        canvas.scale(scaleX, scaleY);
 
         final Paint eraserDetectPaint = Paint()
           ..color = Colors.black
@@ -194,20 +186,19 @@ extension MattingDraw on DrawingController {
           ..strokeJoin = StrokeJoin.round
           ..strokeWidth = content.paint.strokeWidth;
 
-        eraserCanvas.drawPath(content.drawPath.path, eraserDetectPaint);
+        canvas.drawPath(content.drawPath.path, eraserDetectPaint);
 
-        final ui.Picture eraserPicture = eraserRecorder.endRecording();
-        final ui.Image eraserImage = await eraserPicture.toImage(w, h);
-        final ByteData? eraserBytes = await eraserImage.toByteData(
+        final ui.Picture picture = recorder.endRecording();
+        final ui.Image image = await picture.toImage(w, h);
+        final ByteData? bytes = await image.toByteData(
           format: ui.ImageByteFormat.rawRgba,
         );
 
-        if (eraserBytes != null) {
+        if (bytes != null) {
           for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
               final int offset = (y * w + x) * 4;
-              final int alpha = eraserBytes.getUint8(offset + 3);
-              if (alpha > 0) {
+              if (bytes.getUint8(offset + 3) > 0) {
                 mask[y * w + x] = 0;
               }
             }
