@@ -11,7 +11,7 @@ import 'matting_contour.dart';
 
 extension MattingDraw on DrawingController {
   /// 将图片转为画笔，添加
-  void addImageOcrResult(MattingResult result, double boardScale){
+  void addImageMattingResult(MattingResult result, double boardScale){
     // 提取 editImage 中有色区域的轮廓路径（与 refreshContourData 一致）
     final List<Path> paths = MattingContour.extractFilteredContours(result.data);
     if(paths.isEmpty) return;

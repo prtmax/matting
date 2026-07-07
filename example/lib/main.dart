@@ -5,7 +5,6 @@ import 'dart:ui' as ui;
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_drawing_board/path_steps.dart';
 import 'package:image/image.dart' as img;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -414,7 +413,7 @@ class _MyAppState extends State<MyApp> {
     if(!firstDraw) return;
     if(mattingResult!=null){
       final double boardScale = size.width / imageSize.width;
-      _drawingController.addImageOcrResult(mattingResult!, boardScale);
+      _drawingController.addImageMattingResult(mattingResult!, boardScale);
     }
     firstDraw = false;
   }
