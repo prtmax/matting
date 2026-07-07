@@ -72,7 +72,8 @@ extension MattingDraw on DrawingController {
 
   /// 获取画笔图层区域对应的原图像素数据，并去除四周透明区域后，返回相对位置和大小，去除四周后的图片
   Future<MattingResult?> getPaintAreaImageContour(Uint8List image) async {
-    final history = getHistory;
+    // 只取未撤销的活跃历史记录（_history 保留所有项，currentIndex 标记有效范围）
+    final List<PaintContent> history = getHistory.sublist(0, currentIndex);
     if (history.isEmpty) return null;
 
     // 解码原图
@@ -212,7 +213,8 @@ extension MattingDraw on DrawingController {
 
   /// 获取画笔图层区域对应的原图像素数据
   Future<Uint8List?> getPaintAreaImage(Uint8List image) async {
-    final history = getHistory;
+    // 只取未撤销的活跃历史记录（_history 保留所有项，currentIndex 标记有效范围）
+    final List<PaintContent> history = getHistory.sublist(0, currentIndex);
     if (history.isEmpty) return null;
 
     final img.Image? originalImage = img.decodeImage(image);
