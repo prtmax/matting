@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:heic_to_png_jpg/heic_to_png_jpg.dart';
 import 'package:image/image.dart' as img;
 import 'package:onnxruntime_v2/onnxruntime_v2.dart';
 
@@ -205,6 +206,10 @@ class Matting {
     if (!sessionLoaded) {
       print('加载模型失败');
       return null;
+    }
+
+    if (HeicConverter.isHeic(imageBytes)) {
+      imageBytes = await HeicConverter.convertToPNG(heicData: imageBytes);
     }
 
     final img.Image? decodedImage = img.decodeImage(imageBytes);
