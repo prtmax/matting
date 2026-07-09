@@ -3,11 +3,14 @@ import 'dart:math' as math;
 import 'dart:isolate';
 import 'dart:typed_data';
 
-import 'package:heic_to_png_jpg/heic_to_png_jpg.dart';
+import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:onnxruntime_v2/onnxruntime_v2.dart';
 
 import 'matting_bean.dart';
+
+/// Method channel for platform-level image format conversion.
+const MethodChannel _channel = MethodChannel('matting');
 
 /// Parameters for building model input tensor in a background isolate.
 class _ModelInputParams {
@@ -166,6 +169,70 @@ Uint8List? _resizeLogitsToMaskInIsolate(_ResizeLogitsParams params) {
 }
 
 
+/// Returns true when [bytes] has a HEIC / HEIF / AVIF container signature.
+///
+/// The check looks at bytes 4–7 for `"ftyp"` (ISO BMFF) and then at bytes 8–11
+/// for known brands used by HEIC, HEIF, and AVIF files.
+bool _isHeifFormat(Uint8List bytes) {
+  if (bytes.length < 12) return false;
+
+  // "ftyp" at offset 4
+  const int ftypOffset = 4;
+  if (bytes[ftypOffset] != 0x66 || // f
+      bytes[ftypOffset + 1] != 0x74 || // t
+      bytes[ftypOffset + 2] != 0x79 || // y
+      bytes[ftypOffset + 3] != 0x70) {
+    // p
+    return false;
+  }
+
+  // Read the four-character brand at offset 8
+  final String brand = String.fromCharCodes(bytes, 8, 12);
+  const Set<String> heifBrands = <String>{
+    'heic', 'heix', 'hevc', 'hevx', // HEVC still / sequence
+    'heim', 'heis', 'hevm', 'hevs', // HEVC multiview / scalable
+    'mif1', 'msf1', // HEIF structural brands
+    'avif', 'avis', // AVIF
+  };
+
+  return heifBrands.contains(brand.toLowerCase());
+}
+
+/// Converts HEIC / HEIF / AVIF bytes to a PNG-formatted [Uint8List] via
+/// platform channel.  Returns `null` on failure.
+Future<Uint8List?> _decodeHeifOnPlatform(Uint8List heifBytes) async {
+  try {
+    final Uint8List? result =
+        await _channel.invokeMethod<Uint8List>('convertHeicToPng', heifBytes);
+    return result;
+  } catch (e) {
+    print('平台 HEIC 转码失败：$e');
+    return null;
+  }
+}
+
+/// Decodes [imageBytes] into an [img.Image], falling back to platform-level
+/// conversion when the Dart-only `image` package cannot handle the format
+/// (e.g. HEIC / HEIF / AVIF).
+Future<img.Image?> _decodeImageWithPlatformFallback(
+  Uint8List imageBytes,
+) async {
+  // 1. Try the pure-Dart decoder first (covers PNG, JPEG, WebP, etc.).
+  final img.Image? decoded = img.decodeImage(imageBytes);
+  if (decoded != null) return decoded;
+
+  // 2. If the bytes look like an ISO-BMFF container (HEIC / HEIF / AVIF),
+  //    ask the native side to transcode them to PNG and retry.
+  if (_isHeifFormat(imageBytes)) {
+    final Uint8List? png = await _decodeHeifOnPlatform(imageBytes);
+    if (png != null) {
+      return img.decodeImage(png);
+    }
+  }
+
+  return null;
+}
+
 /// 图片识别
 class Matting {
   static const int _modelInputSize = 512;
@@ -208,11 +275,8 @@ class Matting {
       return null;
     }
 
-    if (HeicConverter.isHeic(imageBytes)) {
-      imageBytes = await HeicConverter.convertToPNG(heicData: imageBytes);
-    }
-
-    final img.Image? decodedImage = img.decodeImage(imageBytes);
+    final img.Image? decodedImage =
+        await _decodeImageWithPlatformFallback(imageBytes);
     if (decodedImage == null) {
       print('无法解码当前图片');
       return null;
@@ -354,7 +418,8 @@ class Matting {
     Uint8List imageBytes,
     MattingMask mask,
   ) async {
-    final img.Image? decoded = img.decodeImage(imageBytes);
+    final img.Image? decoded =
+        await _decodeImageWithPlatformFallback(imageBytes);
     if (decoded == null) {
       print('无法解码原图');
       return null;
@@ -438,7 +503,8 @@ class Matting {
     Uint8List imageBytes,
     MattingMask mask,
   ) async {
-    final img.Image? decoded = img.decodeImage(imageBytes);
+    final img.Image? decoded =
+        await _decodeImageWithPlatformFallback(imageBytes);
     if (decoded == null) {
       print('无法解码原图');
       return null;
