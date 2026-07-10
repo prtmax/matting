@@ -279,11 +279,19 @@ class Matting {
     final OrtRunOptions runOptions = OrtRunOptions();
     List<OrtValue?>? outputs;
 
+    final String inputName = _resolveInputName(session);
+    final String outputName = _resolveOutputName(session);
+    print(
+      'ONNX 推理: input=$inputName (shape=[1,3,${_modelInputSize},${_modelInputSize}]), '
+          'output=$outputName, '
+          'inputs列表=${session.inputNames}, outputs列表=${session.outputNames}',
+    );
+
     try {
       outputs = await session.runAsync(
         runOptions,
-        <String, OrtValue>{_resolveInputName(session): inputValue},
-        <String>[_resolveOutputName(session)],
+        <String, OrtValue>{inputName: inputValue},
+        <String>[outputName],
       );
 
       if (outputs == null ||
@@ -299,11 +307,35 @@ class Matting {
         return null;
       }
       final int expectedCount = _modelInputSize * _modelInputSize;
+      // 诊断：采样 logits 值，判断模型是否输出有效数据
+      double logitMin = double.infinity, logitMax = double.negativeInfinity;
+      double logitSum = 0;
+      int nanCount = 0, infCount = 0, zeroCount = 0;
+      for (int i = 0; i < logits.length; i++) {
+        final double v = logits[i];
+        if (v.isNaN) {
+          nanCount++;
+          continue;
+        }
+        if (v.isInfinite) {
+          infCount++;
+          continue;
+        }
+        if (v == 0.0) zeroCount++;
+        if (v < logitMin) logitMin = v;
+        if (v > logitMax) logitMax = v;
+        logitSum += v;
+      }
+      final int validCount = logits.length - nanCount - infCount;
       print(
         '模型输出: logits 总数=${logits.length}, '
             '期望最少=${expectedCount}(512×512), '
-            '差值=${logits.length - expectedCount}, '
-            'offset=${logits.length - expectedCount}',
+            '差值=${logits.length - expectedCount}',
+      );
+      print(
+        'logits 采样: min=$logitMin, max=$logitMax, '
+            'avg=${validCount > 0 ? (logitSum / validCount).toStringAsFixed(4) : "N/A"}, '
+            'NaN=$nanCount, Inf=$infCount, zero=$zeroCount',
       );
 
       // Resize logits back to the original image size on a background isolate.
