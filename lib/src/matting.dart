@@ -191,10 +191,9 @@ class Matting {
 
   Future<bool> _loadSession(File modelFile) async {
     final OrtSessionOptions options = OrtSessionOptions();
-    // iOS 上 ortEnableAll 的图优化（可能与 CoreML 交互）会导致模型输出整体
-    // 负偏约 -12，使 sigmoid 全部归零。使用 ortBasic 仅做常量折叠等安全优化。
+    // iOS: 完全禁用图优化 + 仅 CPU provider，排除 CoreML/布局转换干扰
     final GraphOptimizationLevel optLevel = Platform.isIOS
-        ? GraphOptimizationLevel.ortEnableBasic
+        ? GraphOptimizationLevel.ortDisableAll
         : GraphOptimizationLevel.ortEnableAll;
     options.setSessionGraphOptimizationLevel(optLevel);
     options.setIntraOpNumThreads(math.max(1, Platform.numberOfProcessors ~/ 2));
@@ -279,6 +278,22 @@ class Matting {
       <Float32List>[inputTensor],
       <int>[1, 3, _modelInputSize, _modelInputSize],
     );
+    // 诊断：采样输入张量，验证数据正确性
+        {
+      double inMin = double.infinity,
+          inMax = double.negativeInfinity,
+          inSum = 0;
+      for (int i = 0; i < inputTensor.length; i++) {
+        final double v = inputTensor[i];
+        if (v < inMin) inMin = v;
+        if (v > inMax) inMax = v;
+        inSum += v;
+      }
+      print(
+        '输入张量采样: 元素数=${inputTensor.length}, '
+            'min=$inMin, max=$inMax, avg=${(inSum / inputTensor.length).toStringAsFixed(4)}',
+      );
+    }
     final OrtRunOptions runOptions = OrtRunOptions();
     List<OrtValue?>? outputs;
 
