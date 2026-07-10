@@ -4,7 +4,7 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
-import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
+import 'package:onnxruntime_v2/onnxruntime_v2.dart';
 
 import 'matting_bean.dart';
 
@@ -51,12 +51,7 @@ Float32List _buildModelInputInIsolate(_ModelInputParams params) {
   final Uint8List rgbData = params.rgbData;
 
   double bilinear(
-      double tl,
-      double tr,
-      double bl,
-      double br,
-      double wx,
-      double wy,
+      double tl, double tr, double bl, double br, double wx, double wy,
       ) {
     final double top = (tl * (1.0 - wx)) + (tr * wx);
     final double bottom = (bl * (1.0 - wx)) + (br * wx);
@@ -82,24 +77,21 @@ Float32List _buildModelInputInIsolate(_ModelInputParams params) {
         rgbData[rgbIdx(x1, y0)].toDouble(),
         rgbData[rgbIdx(x0, y1)].toDouble(),
         rgbData[rgbIdx(x1, y1)].toDouble(),
-        wx,
-        wy,
+        wx, wy,
       );
       final double green = bilinear(
         rgbData[rgbIdx(x0, y0) + 1].toDouble(),
         rgbData[rgbIdx(x1, y0) + 1].toDouble(),
         rgbData[rgbIdx(x0, y1) + 1].toDouble(),
         rgbData[rgbIdx(x1, y1) + 1].toDouble(),
-        wx,
-        wy,
+        wx, wy,
       );
       final double blue = bilinear(
         rgbData[rgbIdx(x0, y0) + 2].toDouble(),
         rgbData[rgbIdx(x1, y0) + 2].toDouble(),
         rgbData[rgbIdx(x0, y1) + 2].toDouble(),
         rgbData[rgbIdx(x1, y1) + 2].toDouble(),
-        wx,
-        wy,
+        wx, wy,
       );
 
       final int index = y * modelInputSize + x;
@@ -123,12 +115,7 @@ Uint8List? _resizeLogitsToMaskInIsolate(_ResizeLogitsParams params) {
   }
 
   double bilinear(
-      double tl,
-      double tr,
-      double bl,
-      double br,
-      double wx,
-      double wy,
+      double tl, double tr, double bl, double br, double wx, double wy,
       ) {
     final double top = (tl * (1.0 - wx)) + (tr * wx);
     final double bottom = (bl * (1.0 - wx)) + (br * wx);
@@ -145,7 +132,8 @@ Uint8List? _resizeLogitsToMaskInIsolate(_ResizeLogitsParams params) {
   }
 
   final int offset = params.logits.length - expectedPixelCount;
-  final Uint8List output = Uint8List(params.targetWidth * params.targetHeight);
+  final Uint8List output =
+  Uint8List(params.targetWidth * params.targetHeight);
   final double scaleX = params.sourceWidth / params.targetWidth;
   final double scaleY = params.sourceHeight / params.targetHeight;
 
@@ -166,17 +154,16 @@ Uint8List? _resizeLogitsToMaskInIsolate(_ResizeLogitsParams params) {
         params.logits[offset + (y0 * params.sourceWidth) + x1],
         params.logits[offset + (y1 * params.sourceWidth) + x0],
         params.logits[offset + (y1 * params.sourceWidth) + x1],
-        wx,
-        wy,
+        wx, wy,
       );
-      output[(y * params.targetWidth) + x] = (sigmoid(logit) * 255.0)
-          .round()
-          .clamp(0, 255);
+      output[(y * params.targetWidth) + x] =
+          (sigmoid(logit) * 255.0).round().clamp(0, 255);
     }
   }
 
   return output;
 }
+
 
 /// 图片识别
 class Matting {
@@ -190,19 +177,18 @@ class Matting {
   bool _processing = false;
 
   Future<bool> _loadSession(File modelFile) async {
-    final OrtSessionOptions options = OrtSessionOptions(
-      intraOpNumThreads: math.max(1, Platform.numberOfProcessors ~/ 2),
-      providers: const [OrtProvider.CPU],
-      useArena: true,
+    final OrtSessionOptions options = OrtSessionOptions();
+    options.setSessionGraphOptimizationLevel(
+      GraphOptimizationLevel.ortEnableAll,
     );
+    options.setIntraOpNumThreads(math.max(1, Platform.numberOfProcessors ~/ 2));
+    options.appendCPUProvider(CPUFlags.useArena);
 
     try {
-      final OnnxRuntime ort = OnnxRuntime();
-      session = await ort.createSession(modelFile.path, options: options);
+      session = OrtSession.fromFile(modelFile, options);
       return true;
-    } catch (e) {
-      print('创建 ONNX Session 失败：$e');
-      return false;
+    } finally {
+      options.release();
     }
   }
 
@@ -212,6 +198,8 @@ class Matting {
     required Uint8List imageBytes,
   }) async {
     if (_processing) return null;
+
+    OrtEnv.instance.init();
 
     final bool sessionLoaded = await _loadSession(modelFile);
     if (!sessionLoaded) {
@@ -225,19 +213,12 @@ class Matting {
       return null;
     }
 
-    print(
-      '图片尺寸: ${decodedImage.width}x${decodedImage.height}, '
-          '通道数: ${decodedImage.numChannels}, '
-          '平台: ${Platform.operatingSystem}',
-    );
-
     _processing = true;
 
     // Extract flat RGB data from the decoded image so it can be sent to an
     // isolate without the full image-package object graph.
-    final Uint8List rgbData = Uint8List(
-      decodedImage.width * decodedImage.height * 3,
-    );
+    final Uint8List rgbData =
+    Uint8List(decodedImage.width * decodedImage.height * 3);
     for (int y = 0; y < decodedImage.height; y++) {
       for (int x = 0; x < decodedImage.width; x++) {
         final img.Pixel p = decodedImage.getPixel(x, y);
@@ -253,119 +234,53 @@ class Matting {
     final Float32List inputTensor;
     try {
       inputTensor = await Isolate.run(() {
-        return _buildModelInputInIsolate(
-          _ModelInputParams(
-            width: decodedImage.width,
-            height: decodedImage.height,
-            rgbData: rgbData,
-          ),
-        );
+        return _buildModelInputInIsolate(_ModelInputParams(
+          width: decodedImage.width,
+          height: decodedImage.height,
+          rgbData: rgbData,
+        ));
       });
     } catch (e) {
       print('构建模型输入失败：$e');
       _processing = false;
-      await dispose();
+      dispose();
       return null;
     }
 
-    final OrtValue inputValue = await OrtValue.fromList(inputTensor, <int>[
-      1,
-      3,
-      _modelInputSize,
-      _modelInputSize,
-    ]);
-    // 诊断：采样输入张量，验证数据正确性
-        {
-      double inMin = double.infinity,
-          inMax = double.negativeInfinity,
-          inSum = 0;
-      for (int i = 0; i < inputTensor.length; i++) {
-        final double v = inputTensor[i];
-        if (v < inMin) inMin = v;
-        if (v > inMax) inMax = v;
-        inSum += v;
-      }
-      print(
-        '输入张量采样: 元素数=${inputTensor.length}, '
-            'min=$inMin, max=$inMax, avg=${(inSum / inputTensor.length).toStringAsFixed(4)}',
-      );
-    }
-    final OrtRunOptions runOptions = OrtRunOptions();
-    Map<String, OrtValue>? outputMap;
-
-    final String inputName = _resolveInputName(session);
-    final String outputName = _resolveOutputName(session);
-    print(
-      'ONNX 推理: input=$inputName (shape=[1,3,${_modelInputSize},${_modelInputSize}]), '
-          'output=$outputName, '
-          'inputs列表=${session.inputNames}, outputs列表=${session.outputNames}',
+    final OrtValueTensor inputValue = OrtValueTensor.createTensorWithDataList(
+      <Float32List>[inputTensor],
+      <int>[1, 3, _modelInputSize, _modelInputSize],
     );
+    final OrtRunOptions runOptions = OrtRunOptions();
+    List<OrtValue?>? outputs;
 
     try {
-      outputMap = await session.run(<String, OrtValue>{
-        inputName: inputValue,
-      }, options: runOptions);
+      outputs = await session.runAsync(
+        runOptions,
+        <String, OrtValue>{_resolveInputName(session): inputValue},
+        <String>[_resolveOutputName(session)],
+      );
 
-      final OrtValue? output = outputMap[outputName];
-      if (output == null) {
+      if (outputs == null ||
+          outputs.isEmpty ||
+          outputs.first is! OrtValueTensor) {
         print('模型推理失败：未返回有效张量');
         return null;
       }
 
-      final List logitsList = await output.asFlattenedList();
-      final Float32List logits = Float32List.fromList(
-        logitsList.map((dynamic e) => (e as num).toDouble()).toList(),
-      );
-      final int expectedCount = _modelInputSize * _modelInputSize;
-      // 诊断：采样 logits 值，判断模型是否输出有效数据
-      double logitMin = double.infinity, logitMax = double.negativeInfinity;
-      double logitSum = 0;
-      int nanCount = 0, infCount = 0, zeroCount = 0;
-      for (int i = 0; i < logits.length; i++) {
-        final double v = logits[i];
-        if (v.isNaN) {
-          nanCount++;
-          continue;
-        }
-        if (v.isInfinite) {
-          infCount++;
-          continue;
-        }
-        if (v == 0.0) zeroCount++;
-        if (v < logitMin) logitMin = v;
-        if (v > logitMax) logitMax = v;
-        logitSum += v;
-      }
-      final int validCount = logits.length - nanCount - infCount;
-      print(
-        '模型输出: logits 总数=${logits.length}, '
-            '期望最少=${expectedCount}(512×512), '
-            '差值=${logits.length - expectedCount}',
-      );
-      print(
-        'logits 采样: min=$logitMin, max=$logitMax, '
-            'avg=${validCount > 0 ? (logitSum / validCount).toStringAsFixed(4) : "N/A"}, '
-            'NaN=$nanCount, Inf=$infCount, zero=$zeroCount',
-      );
+      final logits = _flattenTensor((outputs.first! as OrtValueTensor).value);
+      if (logits == null) return null;
 
       // Resize logits back to the original image size on a background isolate.
-      final Uint8List? bytes;
-      try {
-        bytes = await Isolate.run(() {
-          return _resizeLogitsToMaskInIsolate(
-            _ResizeLogitsParams(
-              logits: logits,
-              sourceWidth: _modelInputSize,
-              sourceHeight: _modelInputSize,
-              targetWidth: decodedImage.width,
-              targetHeight: decodedImage.height,
-            ),
-          );
-        });
-      } catch (e) {
-        print('mask 缩放失败（Isolate）：$e');
-        return null;
-      }
+      final Uint8List? bytes = await Isolate.run(() {
+        return _resizeLogitsToMaskInIsolate(_ResizeLogitsParams(
+          logits: logits,
+          sourceWidth: _modelInputSize,
+          sourceHeight: _modelInputSize,
+          targetWidth: decodedImage.width,
+          targetHeight: decodedImage.height,
+        ));
+      });
       if (bytes == null) {
         print('模型输出尺寸异常');
         return null;
@@ -379,14 +294,11 @@ class Matting {
     } finally {
       _processing = false;
 
-      await inputValue.dispose();
-      if (outputMap != null) {
-        for (final OrtValue v in outputMap.values) {
-          await v.dispose();
-        }
-      }
+      inputValue.release();
+      runOptions.release();
+      outputs?.forEach((OrtValue? output) => output?.release());
 
-      await dispose();
+      dispose();
     }
   }
 
@@ -404,9 +316,33 @@ class Matting {
     return session.outputNames.first;
   }
 
-  Future<void> dispose() async {
-    await session.close();
+  Float32List? _flattenTensor(dynamic value) {
+    final List<double> flattened = <double>[];
+
+    void walk(dynamic node) {
+      if (node is num) {
+        flattened.add(node.toDouble());
+        return;
+      }
+      if (node is List) {
+        for (final dynamic child in node) {
+          walk(child);
+        }
+        return;
+      }
+      print('模型返回了无法识别的张量结构：${node.runtimeType}');
+      return null;
+    }
+
+    walk(value);
+    return Float32List.fromList(flattened);
   }
+
+  void dispose() {
+    session.release();
+    OrtEnv.instance.release();
+  }
+
 
   /// 获取抠图结果：根据 mask 裁剪非透明区域，返回相对位置、大小及裁剪后的图片
   static Future<MattingResult?> mergeImageContour(
@@ -431,13 +367,7 @@ class Matting {
         for (int x = 0; x < decoded.width; x++) {
           final img.Pixel p = decoded.getPixel(x, y);
           converted.setPixelRgba(
-            x,
-            y,
-            p.r.toInt(),
-            p.g.toInt(),
-            p.b.toInt(),
-            p.a.toInt(),
-          );
+              x, y, p.r.toInt(), p.g.toInt(), p.b.toInt(), p.a.toInt());
         }
       }
       rgbaImage = converted;
@@ -449,13 +379,7 @@ class Matting {
         final int alpha = mask.bytes[mask.indexOf(x, y)];
         final img.Pixel pixel = rgbaImage.getPixel(x, y);
         rgbaImage.setPixelRgba(
-          x,
-          y,
-          pixel.r.toInt(),
-          pixel.g.toInt(),
-          pixel.b.toInt(),
-          alpha,
-        );
+            x, y, pixel.r.toInt(), pixel.g.toInt(), pixel.b.toInt(), alpha);
       }
     }
 
@@ -503,6 +427,7 @@ class Matting {
     );
   }
 
+
   /// 获取抠图结果
   static Future<Uint8List?> mergeImageAndMask(
       Uint8List imageBytes,
@@ -524,22 +449,13 @@ class Matting {
       for (int y = 0; y < decoded.height; y++) {
         for (int x = 0; x < decoded.width; x++) {
           final img.Pixel p = decoded.getPixel(x, y);
-          converted.setPixelRgba(
-            x,
-            y,
-            p.r.toInt(),
-            p.g.toInt(),
-            p.b.toInt(),
-            p.a.toInt(),
-          );
+          converted.setPixelRgba(x, y, p.r.toInt(), p.g.toInt(), p.b.toInt(), p.a.toInt());
         }
       }
       rgbaImage = converted;
     }
 
-    print(
-      '原图尺寸: ${rgbaImage.width}x${rgbaImage.height}, mask尺寸: ${mask.width}x${mask.height}',
-    );
+    print('原图尺寸: ${rgbaImage.width}x${rgbaImage.height}, mask尺寸: ${mask.width}x${mask.height}');
 
     for (int y = 0; y < mask.height; y++) {
       for (int x = 0; x < mask.width; x++) {
@@ -558,4 +474,6 @@ class Matting {
 
     return Uint8List.fromList(img.encodePng(rgbaImage));
   }
+
+
 }
