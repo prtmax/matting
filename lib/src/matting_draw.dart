@@ -152,11 +152,27 @@ extension MattingDraw on DrawingController {
     // 按历史顺序逐个处理，确保后操作覆盖前操作
     for (final PaintContent content in history) {
       if (content is SimpleLine) {
-        // SimpleLine → 设为前景
+        // 检测是否为孔洞路径（BlendMode.clear），
+        // 孔洞在空白画布上绘制时 clear 模式不会产生可见像素，
+        // 需要用实色 paint 检测覆盖区域，再清除 mask
+        final bool isClear = content.paint.blendMode == BlendMode.clear;
+
         final ui.PictureRecorder recorder = ui.PictureRecorder();
         final Canvas canvas = Canvas(recorder);
         canvas.scale(scaleX, scaleY);
-        content.draw(canvas, boardSize, true);
+
+        if (isClear) {
+          // 用实色 paint 绘制路径以检测覆盖的像素
+          final Paint detectPaint = Paint()
+            ..color = Colors.black
+            ..style = content.paint.style
+            ..strokeCap = content.paint.strokeCap
+            ..strokeJoin = content.paint.strokeJoin
+            ..strokeWidth = content.paint.strokeWidth;
+          canvas.drawPath(content.path.path, detectPaint);
+        } else {
+          content.draw(canvas, boardSize, true);
+        }
 
         final ui.Picture picture = recorder.endRecording();
         final ui.Image image = await picture.toImage(w, h);
@@ -169,7 +185,8 @@ extension MattingDraw on DrawingController {
             for (int x = 0; x < w; x++) {
               final int offset = (y * w + x) * 4;
               if (bytes.getUint8(offset + 3) > 0) {
-                mask[y * w + x] = 255;
+                // 孔洞路径：清除 mask；普通路径：设为前景
+                mask[y * w + x] = isClear ? 0 : 255;
               }
             }
           }
