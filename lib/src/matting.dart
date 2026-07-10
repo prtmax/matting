@@ -4,7 +4,7 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
-import 'package:onnxruntime_v2/onnxruntime_v2.dart';
+import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 
 import 'matting_bean.dart';
 
@@ -190,23 +190,19 @@ class Matting {
   bool _processing = false;
 
   Future<bool> _loadSession(File modelFile) async {
-    final OrtSessionOptions options = OrtSessionOptions();
-    // iOS: 完全禁用图优化 + 仅 CPU provider，排除 CoreML/布局转换干扰
-    final GraphOptimizationLevel optLevel = Platform.isIOS
-        ? GraphOptimizationLevel.ortDisableAll
-        : GraphOptimizationLevel.ortEnableAll;
-    options.setSessionGraphOptimizationLevel(optLevel);
-    options.setIntraOpNumThreads(math.max(1, Platform.numberOfProcessors ~/ 2));
-    options.appendCPUProvider(CPUFlags.useArena);
+    final OrtSessionOptions options = OrtSessionOptions(
+      intraOpNumThreads: math.max(1, Platform.numberOfProcessors ~/ 2),
+      providers: const [OrtProvider.CPU],
+      useArena: true,
+    );
 
     try {
-      session = OrtSession.fromFile(modelFile, options);
+      final OnnxRuntime ort = OnnxRuntime();
+      session = await ort.createSession(modelFile.path, options: options);
       return true;
     } catch (e) {
       print('创建 ONNX Session 失败：$e');
       return false;
-    } finally {
-      options.release();
     }
   }
 
@@ -216,8 +212,6 @@ class Matting {
     required Uint8List imageBytes,
   }) async {
     if (_processing) return null;
-
-    OrtEnv.instance.init();
 
     final bool sessionLoaded = await _loadSession(modelFile);
     if (!sessionLoaded) {
@@ -270,14 +264,16 @@ class Matting {
     } catch (e) {
       print('构建模型输入失败：$e');
       _processing = false;
-      dispose();
+      await dispose();
       return null;
     }
 
-    final OrtValueTensor inputValue = OrtValueTensor.createTensorWithDataList(
-      <Float32List>[inputTensor],
-      <int>[1, 3, _modelInputSize, _modelInputSize],
-    );
+    final OrtValue inputValue = await OrtValue.fromList(inputTensor, <int>[
+      1,
+      3,
+      _modelInputSize,
+      _modelInputSize,
+    ]);
     // 诊断：采样输入张量，验证数据正确性
         {
       double inMin = double.infinity,
@@ -295,7 +291,7 @@ class Matting {
       );
     }
     final OrtRunOptions runOptions = OrtRunOptions();
-    List<OrtValue?>? outputs;
+    Map<String, OrtValue>? outputMap;
 
     final String inputName = _resolveInputName(session);
     final String outputName = _resolveOutputName(session);
@@ -306,24 +302,20 @@ class Matting {
     );
 
     try {
-      outputs = await session.runAsync(
-        runOptions,
-        <String, OrtValue>{inputName: inputValue},
-        <String>[outputName],
-      );
+      outputMap = await session.run(<String, OrtValue>{
+        inputName: inputValue,
+      }, options: runOptions);
 
-      if (outputs == null ||
-          outputs.isEmpty ||
-          outputs.first is! OrtValueTensor) {
+      final OrtValue? output = outputMap[outputName];
+      if (output == null) {
         print('模型推理失败：未返回有效张量');
         return null;
       }
 
-      final logits = _flattenTensor((outputs.first! as OrtValueTensor).value);
-      if (logits == null) {
-        print('张量扁平化失败：无法识别的数据结构');
-        return null;
-      }
+      final List logitsList = await output.asFlattenedList();
+      final Float32List logits = Float32List.fromList(
+        logitsList.map((dynamic e) => (e as num).toDouble()).toList(),
+      );
       final int expectedCount = _modelInputSize * _modelInputSize;
       // 诊断：采样 logits 值，判断模型是否输出有效数据
       double logitMin = double.infinity, logitMax = double.negativeInfinity;
@@ -387,11 +379,14 @@ class Matting {
     } finally {
       _processing = false;
 
-      inputValue.release();
-      runOptions.release();
-      outputs?.forEach((OrtValue? output) => output?.release());
+      await inputValue.dispose();
+      if (outputMap != null) {
+        for (final OrtValue v in outputMap.values) {
+          await v.dispose();
+        }
+      }
 
-      dispose();
+      await dispose();
     }
   }
 
@@ -409,34 +404,8 @@ class Matting {
     return session.outputNames.first;
   }
 
-  Float32List? _flattenTensor(dynamic value) {
-    final List<double> flattened = <double>[];
-    bool hasError = false;
-
-    void walk(dynamic node) {
-      if (hasError) return;
-      if (node is num) {
-        flattened.add(node.toDouble());
-        return;
-      }
-      if (node is List) {
-        for (final dynamic child in node) {
-          walk(child);
-        }
-        return;
-      }
-      print('模型返回了无法识别的张量结构：${node.runtimeType}');
-      hasError = true;
-    }
-
-    walk(value);
-    if (hasError) return null;
-    return Float32List.fromList(flattened);
-  }
-
-  void dispose() {
-    session.release();
-    OrtEnv.instance.release();
+  Future<void> dispose() async {
+    await session.close();
   }
 
   /// 获取抠图结果：根据 mask 裁剪非透明区域，返回相对位置、大小及裁剪后的图片
