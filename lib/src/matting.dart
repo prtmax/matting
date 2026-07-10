@@ -191,9 +191,12 @@ class Matting {
 
   Future<bool> _loadSession(File modelFile) async {
     final OrtSessionOptions options = OrtSessionOptions();
-    options.setSessionGraphOptimizationLevel(
-      GraphOptimizationLevel.ortEnableAll,
-    );
+    // iOS 上 ortEnableAll 的图优化（可能与 CoreML 交互）会导致模型输出整体
+    // 负偏约 -12，使 sigmoid 全部归零。使用 ortBasic 仅做常量折叠等安全优化。
+    final GraphOptimizationLevel optLevel = Platform.isIOS
+        ? GraphOptimizationLevel.ortEnableBasic
+        : GraphOptimizationLevel.ortEnableAll;
+    options.setSessionGraphOptimizationLevel(optLevel);
     options.setIntraOpNumThreads(math.max(1, Platform.numberOfProcessors ~/ 2));
     options.appendCPUProvider(CPUFlags.useArena);
 
